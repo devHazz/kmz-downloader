@@ -1,27 +1,14 @@
-use std::fs;
-
 use anyhow::Result;
-use regex::Regex;
 use scraper::{ElementRef, Html, Selector};
-
-use crate::config::Config;
 
 #[derive(Debug)]
 pub struct Record {
     pub kind: RecordType,
-    pub uri: String,
     pub name: String,
     pub file_size: String,
 }
 
 impl Record {
-    pub async fn download(&self) -> Result<()> {
-        if !self.uri.is_empty() && !(matches!(self.kind, RecordType::ParentDirectory) || matches!(self.kind, RecordType::Directory)) {
-            let file = reqwest::get(&self.uri).await?.bytes().await?;
-            fs::write(format!("./{}", self.name), file).expect("could not write record to file");
-        }
-        Ok(())
-    }
     pub fn get_type(row: ElementRef) -> Option<RecordType> {
         let kind_data_cell = row.children().nth(0);
         if let Some(kind) = kind_data_cell {
@@ -76,10 +63,6 @@ impl Record {
             None
         }
     }
-    pub fn is_kmz(&self) -> bool {
-        let r = Regex::new(r"(RE_)|(KMZ)|(RSA-DATA).*\.zip").unwrap();
-        return r.is_match(&self.name)
-    }
 }
 
 #[derive(Debug)]
@@ -102,41 +85,33 @@ fn get_record_type(alt: &str) -> RecordType {
     return record_type;
 }
 
-#[derive(Default, Debug)]
+#[derive(Default)]
 pub struct Listing {
     pub is_root: bool,
     pub records: Vec<Record>,
 }
 
 impl Listing {
-    pub async fn read(&self, uri: String) -> Result<Self> {
+    pub async fn read(&self, uri: String) -> Result<()> {
         let body = reqwest::get(uri).await?.text().await?;
-        let records = self
-            .read_records(body)
-            .expect("could not get listing records");
-        let is_root = !records
-            .iter()
-            .any(|r| matches!(r.kind, RecordType::ParentDirectory));
-
-        Ok(Listing { is_root, records })
+        let records = self.read_records(body);
+        println!("{:?}", records);
+        Ok(())
     }
-    fn read_record(&self, row: ElementRef) -> Record {
+    pub fn read_record(&self, row: ElementRef) -> Record {
         let kind = Record::get_type(row).expect("could not get record kind");
         let name = Record::get_name(row).expect("could not get record name");
         let file_size = Record::get_size(row).expect("could not get record file size");
-        let uri = Config::read().expect("could not read config").dir_url + &name;
         return Record {
             kind,
-            uri,
             name,
             file_size,
         };
     }
     pub fn read_records(&self, body: String) -> Result<Vec<Record>> {
         let html = Html::parse_document(&body);
-        let table_selector =
-            Selector::parse("body > table > tbody").expect("could not select table body");
-        let tr_selector = Selector::parse("tr").expect("could not select table rows");
+        let table_selector = Selector::parse("body > table > tbody").unwrap();
+        let tr_selector = Selector::parse("tr").unwrap();
         let mut records: Vec<Record> = Vec::new();
 
         let rows = html
