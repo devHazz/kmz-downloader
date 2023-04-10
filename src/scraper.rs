@@ -23,7 +23,6 @@ impl Record {
             let file = reqwest::get(&self.uri).await?.bytes().await?;
             println!("downloading: {}", self.name);
             if !(Path::new("temp/").exists()) {
-                println!("boo");
                 fs::create_dir_all("temp/").expect("could not create temp directory");
             }
             fs::write(format!("temp/{}", self.name), file)
@@ -169,7 +168,7 @@ impl Listing {
             };
             if let Some(record) = row {
                 if record.is_kmz() {
-                    record.download().await;
+                    let _ = record.download().await;
                 }
                 if let Some(kmz) = record.as_kmz() {
                     kmz.unpack();

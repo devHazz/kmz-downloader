@@ -1,7 +1,7 @@
 use std::{
     fs::{self, File},
     path::Path,
-    str::Bytes,
+    str::Bytes, io,
 };
 
 use anyhow::Result;
@@ -23,11 +23,11 @@ impl CompressedKMZ {
                 Ok(file) => file,
                 Err(e) => panic!("file create error: {}", e),
             };
-            println!("path: {}", &self.path);
             let mut archive = zip::ZipArchive::new(file).expect("could not parse zip archive");
             for i in 0..archive.len() {
                 let file = archive.by_index(i).expect("could not get archive");
                 println!("{}", file.name());
+                let kmz_archive = zip::ZipArchive::new(file).expect("could not read kmz archive");
             }
     }
 }
