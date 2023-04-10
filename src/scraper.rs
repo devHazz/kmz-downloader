@@ -1,10 +1,10 @@
-use std::fs;
+use std::{fs, path::Path};
 
 use anyhow::Result;
 use regex::Regex;
 use scraper::{ElementRef, Html, Selector};
 
-use crate::config::Config;
+use crate::{config::Config, kmz::CompressedKMZ};
 
 #[derive(Debug)]
 pub struct Record {
@@ -16,9 +16,18 @@ pub struct Record {
 
 impl Record {
     pub async fn download(&self) -> Result<()> {
-        if !self.uri.is_empty() && !(matches!(self.kind, RecordType::ParentDirectory) || matches!(self.kind, RecordType::Directory)) {
+        if !self.uri.is_empty()
+            && !(matches!(self.kind, RecordType::ParentDirectory)
+                || matches!(self.kind, RecordType::Directory))
+        {
             let file = reqwest::get(&self.uri).await?.bytes().await?;
-            fs::write(format!("./{}", self.name), file).expect("could not write record to file");
+            println!("downloading: {}", self.name);
+            if !(Path::new("temp/").exists()) {
+                println!("boo");
+                fs::create_dir_all("temp/").expect("could not create temp directory");
+            }
+            fs::write(format!("temp/{}", self.name), file)
+                .expect("could not write record to file");
         }
         Ok(())
     }
@@ -78,7 +87,13 @@ impl Record {
     }
     pub fn is_kmz(&self) -> bool {
         let r = Regex::new(r"(RE_)|(KMZ)|(RSA-DATA).*\.zip").unwrap();
-        return r.is_match(&self.name)
+        return r.is_match(&self.name);
+    }
+    pub fn as_kmz(&self) -> Option<CompressedKMZ> {
+        return match self.is_kmz() {
+            true => CompressedKMZ::new(format!("temp/{}", self.name.to_owned())),
+            false => None,
+        };
     }
 }
 
@@ -113,6 +128,7 @@ impl Listing {
         let body = reqwest::get(uri).await?.text().await?;
         let records = self
             .read_records(body)
+            .await
             .expect("could not get listing records");
         let is_root = !records
             .iter()
@@ -132,7 +148,7 @@ impl Listing {
             file_size,
         };
     }
-    pub fn read_records(&self, body: String) -> Result<Vec<Record>> {
+    pub async fn read_records(&self, body: String) -> Result<Vec<Record>> {
         let html = Html::parse_document(&body);
         let table_selector =
             Selector::parse("body > table > tbody").expect("could not select table body");
@@ -152,6 +168,12 @@ impl Listing {
                 false => None,
             };
             if let Some(record) = row {
+                if record.is_kmz() {
+                    record.download().await;
+                }
+                if let Some(kmz) = record.as_kmz() {
+                    kmz.unpack();
+                }
                 records.push(record);
             }
         }
