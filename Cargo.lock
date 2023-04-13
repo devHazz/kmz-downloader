@@ -686,10 +686,12 @@ name = "kmz-downloader"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "geo-types",
  "kml",
  "regex",
  "reqwest",
  "scraper",
+ "thiserror",
  "tokio",
  "yaml-rust",
  "zip",

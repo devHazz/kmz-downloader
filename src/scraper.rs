@@ -3,15 +3,79 @@ use std::{fs, path::Path};
 use anyhow::Result;
 use regex::Regex;
 use scraper::{ElementRef, Html, Selector};
+use std::str::FromStr;
+use thiserror::Error;
 
 use crate::{config::Config, kmz::CompressedKMZ};
-
 #[derive(Debug)]
 pub struct Record {
     pub kind: RecordType,
     pub uri: String,
     pub name: String,
     pub file_size: String,
+}
+
+pub trait RecordRef {
+     fn name(&self) -> Option<String>;
+     fn kind(&self) -> Option<RecordType>;
+     fn size(&self) -> Option<String>;
+}
+
+impl RecordRef for ElementRef<'_> {
+    fn name(&self) -> Option<String> {
+        let name_data_cell = self.children().nth(1);
+        if let Some(name) = name_data_cell {
+            let name_child = name.children().nth(0).unwrap();
+            if let Some(text_child) = name_child.first_child() {
+                return match text_child.value().is_text() {
+                    true => Some(text_child.value().as_text().unwrap().to_string()),
+                    false => None,
+                };
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    fn kind(&self) -> Option<RecordType> {
+        let kind_data_cell = self.children().nth(0);
+        if let Some(kind) = kind_data_cell {
+            let kind_elem = kind
+                .value()
+                .as_element()
+                .expect("could not get data cell type");
+            if kind_elem.attrs().any(|(e, v)| e == "valign" && v == "top") {
+                let kind_child = kind.children().nth(0).unwrap();
+                Some(RecordType::from_str(
+                    kind_child
+                        .value()
+                        .as_element()
+                        .unwrap()
+                        .attr("alt")
+                        .unwrap_or("[   ]"),
+                ).unwrap())
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    fn size(&self) -> Option<String> {
+        let size_data_cell = self.children().nth(3);
+        if let Some(size) = size_data_cell {
+            let size_data_child = size.first_child().unwrap().value();
+            return match size_data_child.is_text() {
+                true => Some(size_data_child.as_text().unwrap().to_string()),
+                false => None,
+            };
+        } else {
+            None
+        }
+    }
 }
 
 impl Record {
@@ -30,60 +94,7 @@ impl Record {
         }
         Ok(())
     }
-    pub fn get_type(row: ElementRef) -> Option<RecordType> {
-        let kind_data_cell = row.children().nth(0);
-        if let Some(kind) = kind_data_cell {
-            let kind_elem = kind
-                .value()
-                .as_element()
-                .expect("could not get data cell type");
-            if kind_elem.attrs().any(|a| a.0 == "valign" && a.1 == "top") {
-                let kind_child = kind.children().nth(0).unwrap();
-                return Some(get_record_type(
-                    kind_child
-                        .value()
-                        .as_element()
-                        .unwrap()
-                        .attr("alt")
-                        .unwrap_or("[   ]"),
-                ));
-            } else {
-                return None;
-            }
-        } else {
-            return None;
-        }
-    }
 
-    pub fn get_name(row: ElementRef) -> Option<String> {
-        let name_data_cell = row.children().nth(1);
-        if let Some(name) = name_data_cell {
-            let name_child = name.children().nth(0).unwrap();
-            if let Some(text_child) = name_child.first_child() {
-                return match text_child.value().is_text() {
-                    true => Some(text_child.value().as_text().unwrap().to_string()),
-                    false => None,
-                };
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    }
-
-    pub fn get_size(row: ElementRef) -> Option<String> {
-        let size_data_cell = row.children().nth(3);
-        if let Some(size) = size_data_cell {
-            let size_data_child = size.first_child().unwrap().value();
-            return match size_data_child.is_text() {
-                true => Some(size_data_child.as_text().unwrap().to_string()),
-                false => None,
-            };
-        } else {
-            None
-        }
-    }
     pub fn is_kmz(&self) -> bool {
         let r = Regex::new(r"(RE_)|(KMZ)|(RSA-DATA).*\.zip").unwrap();
         return r.is_match(&self.name);
@@ -96,24 +107,32 @@ impl Record {
     }
 }
 
+#[derive(Error, Debug)]
+pub enum RecordTypeError {
+    #[error("invalid record type: {0}")]
+    InvalidRecordType(String)
+}
+
 #[derive(Debug)]
 pub enum RecordType {
     ParentDirectory,
     Directory,
     File,
     Unknown,
-    None,
 }
 
-fn get_record_type(alt: &str) -> RecordType {
-    let record_type = match alt {
-        "[DIR]" => RecordType::Directory,
-        "[PARENTDIR]" => RecordType::ParentDirectory,
-        "[TXT]" | "[IMG]" | "[VID]" => RecordType::File,
-        "[   ]" => RecordType::Unknown,
-        _ => RecordType::None,
-    };
-    return record_type;
+impl FromStr for RecordType {
+    type Err = RecordTypeError;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "[DIR]" => Ok(RecordType::Directory),
+            "[PARENTDIR]" => Ok(RecordType::ParentDirectory),
+            "[TXT]"|"[IMG]"|"[VID]" => Ok(RecordType::File),
+            "[   ]" => Ok(RecordType::Unknown),
+            e => Err(RecordTypeError::InvalidRecordType(e.to_string()))
+        }
+    }
+
 }
 
 #[derive(Default, Debug)]
@@ -136,9 +155,9 @@ impl Listing {
         Ok(Listing { is_root, records })
     }
     fn read_record(&self, row: ElementRef) -> Record {
-        let kind = Record::get_type(row).expect("could not get record kind");
-        let name = Record::get_name(row).expect("could not get record name");
-        let file_size = Record::get_size(row).expect("could not get record file size");
+        let kind = row.kind().expect("could not get record kind");
+        let name = row.name().expect("could not get record name");
+        let file_size = row.size().expect("could not get record file size");
         let uri = Config::read().expect("could not read config").dir_url + &name;
         return Record {
             kind,
