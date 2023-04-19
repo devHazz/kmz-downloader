@@ -4,9 +4,6 @@ use std::{
     path::Path,
 };
 
-use geo_types::{GeometryCollection};
-use kml::{ quick_collection, KmlReader};
-
 pub struct CompressedKMZ {
     path: String,
 }
@@ -40,10 +37,6 @@ impl CompressedKMZ {
                     .open(format!("temp/{}", file.name()))
                     .expect("could not create temp archive");
                 io::copy(&mut file, &mut out_archive).unwrap();
-                let mut reader =
-                    KmlReader::<_, f64>::from_kmz_path(format!("temp/{}", file.name())).unwrap();
-                let kml = reader.read().expect("could not read kml");
-                let _doc: GeometryCollection<f64> = quick_collection(kml).unwrap();
             }
         }
     }

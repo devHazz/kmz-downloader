@@ -7,6 +7,9 @@ use std::str::FromStr;
 use thiserror::Error;
 
 use crate::{config::Config, kmz::CompressedKMZ};
+
+const SCRAPER_BODY_SELECTOR: &str = "body > table > tbody";
+
 #[derive(Debug)]
 pub struct Record {
     pub kind: RecordType,
@@ -16,9 +19,9 @@ pub struct Record {
 }
 
 pub trait RecordRef {
-     fn name(&self) -> Option<String>;
-     fn kind(&self) -> Option<RecordType>;
-     fn size(&self) -> Option<String>;
+    fn name(&self) -> Option<String>;
+    fn kind(&self) -> Option<RecordType>;
+    fn size(&self) -> Option<String>;
 }
 
 impl RecordRef for ElementRef<'_> {
@@ -48,14 +51,17 @@ impl RecordRef for ElementRef<'_> {
                 .expect("could not get data cell type");
             if kind_elem.attrs().any(|(e, v)| e == "valign" && v == "top") {
                 let kind_child = kind.children().nth(0).unwrap();
-                Some(RecordType::from_str(
-                    kind_child
-                        .value()
-                        .as_element()
-                        .unwrap()
-                        .attr("alt")
-                        .unwrap_or("[   ]"),
-                ).unwrap())
+                Some(
+                    RecordType::from_str(
+                        kind_child
+                            .value()
+                            .as_element()
+                            .unwrap()
+                            .attr("alt")
+                            .unwrap_or(RecordType::Unknown.to_string().as_str()),
+                    )
+                    .unwrap(),
+                )
             } else {
                 None
             }
@@ -79,20 +85,26 @@ impl RecordRef for ElementRef<'_> {
 }
 
 impl Record {
-    pub async fn download(&self) -> Result<()> {
+    pub fn download(&self) {
         if !self.uri.is_empty()
             && !(matches!(self.kind, RecordType::ParentDirectory)
                 || matches!(self.kind, RecordType::Directory))
         {
-            let file = reqwest::get(&self.uri).await?.bytes().await?;
+            let file = reqwest::blocking::get(&self.uri)
+                .expect("could not get archive file")
+                .bytes()
+                .expect("could not get archive body");
             println!("downloading: {}", self.name);
             if !(Path::new("temp/").exists()) {
                 fs::create_dir_all("temp/").expect("could not create temp directory");
             }
-            fs::write(format!("temp/{}", self.name), file)
-                .expect("could not write record to file");
+            fs::write(format!("temp/{}", self.name), file).expect("could not write record to file");
         }
-        Ok(())
+    }
+
+    #[warn(dead_code)]
+    fn downloaded(&self) -> bool {
+        return Path::new(&format!("temp/{}", self.name)).exists();
     }
 
     pub fn is_kmz(&self) -> bool {
@@ -110,14 +122,16 @@ impl Record {
 #[derive(Error, Debug)]
 pub enum RecordTypeError {
     #[error("invalid record type: {0}")]
-    InvalidRecordType(String)
+    InvalidRecordType(String),
 }
 
 #[derive(Debug)]
 pub enum RecordType {
     ParentDirectory,
     Directory,
-    File,
+    TextFile,
+    ImageFile,
+    VideoFile,
     Unknown,
 }
 
@@ -127,12 +141,26 @@ impl FromStr for RecordType {
         match s {
             "[DIR]" => Ok(RecordType::Directory),
             "[PARENTDIR]" => Ok(RecordType::ParentDirectory),
-            "[TXT]"|"[IMG]"|"[VID]" => Ok(RecordType::File),
+            "[TXT]" => Ok(RecordType::TextFile),
+            "[IMG]" => Ok(RecordType::ImageFile),
+            "[VID]" => Ok(RecordType::VideoFile),
             "[   ]" => Ok(RecordType::Unknown),
-            e => Err(RecordTypeError::InvalidRecordType(e.to_string()))
+            e => Err(RecordTypeError::InvalidRecordType(e.to_string())),
         }
     }
+}
 
+impl ToString for RecordType {
+    fn to_string(&self) -> String {
+        match self {
+            RecordType::Directory => "[DIR]".to_string(),
+            RecordType::ParentDirectory => "[PARENTDIR]".to_string(),
+            RecordType::TextFile => "[TXT]".to_string(),
+            RecordType::ImageFile => "[IMG]".to_string(),
+            RecordType::VideoFile => "[VID]".to_string(),
+            RecordType::Unknown => "[   ]".to_string(),
+        }
+    }
 }
 
 #[derive(Default, Debug)]
@@ -142,12 +170,10 @@ pub struct Listing {
 }
 
 impl Listing {
-    pub async fn read(&self, uri: String) -> Result<Self> {
-        let body = reqwest::get(uri).await?.text().await?;
+    pub fn read(&self, uri: String) -> Result<Self> {
+        let body = reqwest::blocking::get(uri)?.text()?;
         let records = self
-            .read_records(body)
-            .await
-            .expect("could not get listing records");
+            .read_records(body)?;
         let is_root = !records
             .iter()
             .any(|r| matches!(r.kind, RecordType::ParentDirectory));
@@ -166,10 +192,10 @@ impl Listing {
             file_size,
         };
     }
-    pub async fn read_records(&self, body: String) -> Result<Vec<Record>> {
+    pub fn read_records(&self, body: String) -> Result<Vec<Record>> {
         let html = Html::parse_document(&body);
         let table_selector =
-            Selector::parse("body > table > tbody").expect("could not select table body");
+            Selector::parse(SCRAPER_BODY_SELECTOR).expect("could not select table body");
         let tr_selector = Selector::parse("tr").expect("could not select table rows");
         let mut records: Vec<Record> = Vec::new();
 
@@ -187,12 +213,13 @@ impl Listing {
             };
             if let Some(record) = row {
                 if record.is_kmz() {
-                    let _ = record.download().await;
+                    record.download();
+                    match record.as_kmz() {
+                        Some(k) => k.unpack(),
+                        None => println!("could not convert file to kmz archive"),
+                    }
+                    records.push(record);
                 }
-                if let Some(kmz) = record.as_kmz() {
-                    kmz.unpack();
-                }
-                records.push(record);
             }
         }
         Ok(records)

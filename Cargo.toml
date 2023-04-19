@@ -10,7 +10,7 @@ anyhow = "1.0.70"
 geo-types = "0.7.9"
 kml = { path = "./kml" }
 regex = "1.7.3"
-reqwest = "0.11.15"
+reqwest = { version = "0.11.15", features = ["blocking"] }
 scraper = "0.15.0"
 thiserror = "1.0.40"
 tokio = { version = "1.26.0", features = ["full"] }
